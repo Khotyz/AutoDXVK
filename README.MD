@@ -1,4 +1,3 @@
-```markdown
 # 🎮 Auto DXVK
 
 **Auto DXVK** is a free, open source graphical installer that puts [**DXVK**](https://github.com/doitsujin/dxvk) into your Windows games with a few clicks. Pick a release, choose the game executable, and the app detects the architecture and DirectX version automatically, then copies the correct DLL files into the game folder. It also keeps a backup of anything it replaces, so reverting is a single step.
@@ -28,7 +27,7 @@ This downloads the latest version and the language files to a temporary folder, 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\AutoDXVK.ps1
 ```
 
-> **⚠️ Important:** Games installed in protected folders such as `C:\Program Files` require administrator rights. The script auto elevates when needed.
+> **⚠️️ Important:** Games installed in protected folders such as `C:\Program Files` require administrator rights. The script auto elevates when needed.
 
 ---
 
@@ -170,4 +169,3 @@ Distributed under the MIT License. See the [**DXVK**](https://github.com/doitsuj
 
 * [**DXVK**](https://github.com/doitsujin/dxvk) by Philip Rebohle and contributors.
 * [**vkd3d-proton**](https://github.com/HansKristian-Work/vkd3d-proton), the recommended option for Direct3D 12 games.
-```
