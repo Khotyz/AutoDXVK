@@ -1,0 +1,41 @@
+# Build artifacts
+*.exe
+*.dll
+*.pdb
+*.log
+
+# PS2EXE output
+AutoDXVK.exe
+Release/
+Output/
+
+# Local runtime output
+Downloads/
+Auto DXVK/
+
+# IDE and editor files
+.vs/
+.vscode/
+.idea/
+*.iml
+out/
+*.suo
+*.user
+*.userprefs
+
+# Windows
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# macOS (in case of cross editing)
+.DS_Store
+
+# Temporary files
+*.tmp
+*.temp
+*~
+
+# PowerShell
+*.ps1.bak
+*.psm1.bak
