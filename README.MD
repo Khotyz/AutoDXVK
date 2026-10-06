@@ -2,8 +2,6 @@
 
 **Auto DXVK** is a free, open source graphical installer that puts [**DXVK**](https://github.com/doitsujin/dxvk) into your Windows games with a few clicks. Pick a release, choose the game executable, and the app detects the architecture and DirectX version automatically, then copies the correct DLL files into the game folder. It also keeps a backup of anything it replaces, so reverting is a single step.
 
-🔗 **Repository:** <https://github.com/Khotyz/AutoDXVK>
-
 ---
 
 ## 🚀 How to Run
