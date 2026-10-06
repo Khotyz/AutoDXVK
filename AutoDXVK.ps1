@@ -1,9 +1,54 @@
-﻿﻿$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
-if ([System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA -and $PSCommandPath) {
-    $hostExecutable = Join-Path $PSHOME 'powershell.exe'
-    if (-not (Test-Path -LiteralPath $hostExecutable)) { $hostExecutable = Join-Path $PSHOME 'pwsh.exe' }
-    Start-Process -FilePath $hostExecutable -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $PSCommandPath)) -WindowStyle Hidden
+$script:Repository = 'https://github.com/Khotyz/AutoDXVK'
+$script:RawBase = 'https://raw.githubusercontent.com/Khotyz/AutoDXVK/main'
+$script:LanguageCodes = @('en', 'pt-br', 'es')
+$script:OnlineRun = [string]::IsNullOrEmpty($PSScriptRoot) -and [string]::IsNullOrEmpty($PSCommandPath)
+
+function Test-Administrator {
+    return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Get-HostExecutable {
+    $candidate = Join-Path $PSHOME 'powershell.exe'
+    if (-not (Test-Path -LiteralPath $candidate)) { $candidate = Join-Path $PSHOME 'pwsh.exe' }
+    return $candidate
+}
+
+function Start-NewHost {
+    param([string]$ScriptPath, [bool]$Elevate)
+    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $ScriptPath))
+    $parameters = @{ FilePath = (Get-HostExecutable); ArgumentList = $arguments; WindowStyle = 'Hidden' }
+    if ($Elevate) { $parameters['Verb'] = 'RunAs' }
+    Start-Process @parameters
+}
+
+if ($script:OnlineRun) {
+    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'AutoDXVK'
+    [void](New-Item -ItemType Directory -Path $tempRoot -Force)
+    $langFolder = Join-Path $tempRoot 'lang'
+    [void](New-Item -ItemType Directory -Path $langFolder -Force)
+    $targetScript = Join-Path $tempRoot 'AutoDXVK.ps1'
+    $ProgressPreference = 'SilentlyContinue'
+    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+    try {
+        Invoke-WebRequest -Uri ($script:RawBase + '/AutoDXVK.ps1') -OutFile $targetScript -UseBasicParsing
+        foreach ($code in $script:LanguageCodes) {
+            Invoke-WebRequest -Uri ($script:RawBase + '/lang/' + $code + '.json') -OutFile (Join-Path $langFolder ($code + '.json')) -UseBasicParsing
+        }
+    }
+    catch {
+        Write-Host ('Failed to download AutoDXVK: ' + $_.Exception.Message) -ForegroundColor Red
+        exit 1
+    }
+    Start-NewHost -ScriptPath $targetScript -Elevate (-not (Test-Administrator))
+    exit
+}
+
+$needsElevation = -not (Test-Administrator)
+$needsSta = [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA
+if (($needsElevation -or $needsSta) -and $PSCommandPath) {
+    Start-NewHost -ScriptPath $PSCommandPath -Elevate $needsElevation
     exit
 }
 
