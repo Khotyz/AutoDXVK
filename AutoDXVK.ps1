@@ -1,55 +1,119 @@
-﻿$ErrorActionPreference = 'Stop'
-
 $script:Repository = 'https://github.com/Khotyz/AutoDXVK'
-$script:RawBase = 'https://raw.githubusercontent.com/Khotyz/AutoDXVK/main'
+$script:RawBases = @(
+    'https://raw.githubusercontent.com/Khotyz/AutoDXVK/refs/heads/main',
+    'https://github.com/Khotyz/AutoDXVK/raw/refs/heads/main',
+    'https://cdn.jsdelivr.net/gh/Khotyz/AutoDXVK@main'
+)
 $script:LanguageCodes = @('en', 'pt-br', 'es')
-$script:OnlineRun = [string]::IsNullOrEmpty($PSScriptRoot) -and [string]::IsNullOrEmpty($PSCommandPath)
+$script:HostProcessName = [System.Diagnostics.Process]::GetCurrentProcess().ProcessName
+$script:OnlineRun = [string]::IsNullOrEmpty($PSScriptRoot) -and [string]::IsNullOrEmpty($PSCommandPath) -and ($script:HostProcessName -match '^(powershell|pwsh|powershell_ise)$')
 
 function Test-Administrator {
     return ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
 function Get-HostExecutable {
+    $systemRoot = $env:SystemRoot
+    if ($systemRoot) {
+        $folder = 'System32'
+        if ([System.Environment]::Is64BitOperatingSystem -and -not [System.Environment]::Is64BitProcess) { $folder = 'Sysnative' }
+        $candidate = Join-Path $systemRoot ($folder + '\WindowsPowerShell\v1.0\powershell.exe')
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
     $candidate = Join-Path $PSHOME 'powershell.exe'
-    if (-not (Test-Path -LiteralPath $candidate)) { $candidate = Join-Path $PSHOME 'pwsh.exe' }
-    return $candidate
+    if (Test-Path -LiteralPath $candidate) { return $candidate }
+    return (Join-Path $PSHOME 'pwsh.exe')
 }
 
 function Start-NewHost {
     param([string]$ScriptPath, [bool]$Elevate)
-    $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-STA', '-File', ('"{0}"' -f $ScriptPath))
-    $parameters = @{ FilePath = (Get-HostExecutable); ArgumentList = $arguments; WindowStyle = 'Hidden' }
+    $argumentLine = '-NoProfile -ExecutionPolicy Bypass -STA -File "{0}"' -f $ScriptPath
+    $parameters = @{ FilePath = (Get-HostExecutable); ArgumentList = $argumentLine; WindowStyle = 'Hidden' }
     if ($Elevate) { $parameters['Verb'] = 'RunAs' }
-    Start-Process @parameters
+    try {
+        Start-Process @parameters -ErrorAction Stop
+        return $true
+    }
+    catch { return $false }
 }
 
-if ($script:OnlineRun) {
-    $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'AutoDXVK'
-    [void](New-Item -ItemType Directory -Path $tempRoot -Force)
-    $langFolder = Join-Path $tempRoot 'lang'
-    [void](New-Item -ItemType Directory -Path $langFolder -Force)
-    $targetScript = Join-Path $tempRoot 'AutoDXVK.ps1'
-    $ProgressPreference = 'SilentlyContinue'
-    [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+function Set-SecureProtocols {
+    try { [System.Net.ServicePointManager]::SecurityProtocol = ([System.Net.SecurityProtocolType]::Tls12 -bor ([System.Net.SecurityProtocolType]12288)) }
+    catch { [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 }
+}
+
+function Get-RemoteText {
+    param([string[]]$Urls)
+    $lastMessage = 'No download source is available.'
+    foreach ($url in $Urls) {
+        for ($attempt = 1; $attempt -le 2; $attempt++) {
+            $client = New-Object System.Net.WebClient
+            try {
+                $client.Encoding = [System.Text.Encoding]::UTF8
+                $client.Headers.Add('User-Agent', 'AutoDXVK-Bootstrap/1.0')
+                $client.Proxy = [System.Net.WebRequest]::GetSystemWebProxy()
+                $client.Proxy.Credentials = [System.Net.CredentialCache]::DefaultCredentials
+                $text = $client.DownloadString($url)
+                if (-not [string]::IsNullOrWhiteSpace($text)) { return $text.TrimStart([char]0xFEFF) }
+                $lastMessage = 'Empty response from ' + $url
+            }
+            catch { $lastMessage = $_.Exception.Message + ' (' + $url + ')' }
+            finally { $client.Dispose() }
+        }
+    }
+    throw $lastMessage
+}
+
+function Invoke-OnlineBootstrap {
     try {
-        Invoke-WebRequest -Uri ($script:RawBase + '/AutoDXVK.ps1') -OutFile $targetScript -UseBasicParsing
+        $ProgressPreference = 'SilentlyContinue'
+        Set-SecureProtocols
+        $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'AutoDXVK'
+        $langFolder = Join-Path $tempRoot 'lang'
+        [void](New-Item -ItemType Directory -Path $langFolder -Force)
+        $encoding = New-Object System.Text.UTF8Encoding($true)
+
+        $scriptText = Get-RemoteText -Urls @($script:RawBases | ForEach-Object { $_ + '/AutoDXVK.ps1' })
+        $targetScript = Join-Path $tempRoot 'AutoDXVK.ps1'
+        [System.IO.File]::WriteAllText($targetScript, $scriptText, $encoding)
+
+        $tokens = $null
+        $parseErrors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($targetScript, [ref]$tokens, [ref]$parseErrors)
+        if ($parseErrors -and $parseErrors.Count -gt 0) { throw ('The downloaded script is not valid: ' + $parseErrors[0].Message) }
+
         foreach ($code in $script:LanguageCodes) {
-            Invoke-WebRequest -Uri ($script:RawBase + '/lang/' + $code + '.json') -OutFile (Join-Path $langFolder ($code + '.json')) -UseBasicParsing
+            try {
+                $languageText = Get-RemoteText -Urls @($script:RawBases | ForEach-Object { $_ + '/lang/' + $code + '.json' })
+                [System.IO.File]::WriteAllText((Join-Path $langFolder ($code + '.json')), $languageText, $encoding)
+            }
+            catch {
+                if ($code -eq 'en') { throw }
+            }
+        }
+
+        $elevate = -not (Test-Administrator)
+        if (-not (Start-NewHost -ScriptPath $targetScript -Elevate $elevate)) {
+            Write-Host 'Auto DXVK could not be started. The administrator prompt was cancelled or the host could not be launched.' -ForegroundColor Yellow
         }
     }
     catch {
-        Write-Host ('Failed to download AutoDXVK: ' + $_.Exception.Message) -ForegroundColor Red
-        exit 1
+        Write-Host ('Failed to download Auto DXVK: ' + $_.Exception.Message) -ForegroundColor Red
     }
-    Start-NewHost -ScriptPath $targetScript -Elevate (-not (Test-Administrator))
-    exit
 }
+
+if ($script:OnlineRun) {
+    Invoke-OnlineBootstrap
+    return
+}
+
+$ErrorActionPreference = 'Stop'
 
 $needsElevation = -not (Test-Administrator)
 $needsSta = [System.Threading.Thread]::CurrentThread.GetApartmentState() -ne [System.Threading.ApartmentState]::STA
 if (($needsElevation -or $needsSta) -and $PSCommandPath) {
-    Start-NewHost -ScriptPath $PSCommandPath -Elevate $needsElevation
-    exit
+    [void](Start-NewHost -ScriptPath $PSCommandPath -Elevate $needsElevation)
+    return
 }
 
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase, System.Drawing
@@ -269,7 +333,7 @@ function Find-ImportedLibraries {
 }
 
 function Resolve-DirectXVersion {
-    param($Libraries, $Rules)
+    param($Libraries, $Rules, [bool]$AllowDxgi = $true)
     $priority = @('d3d11.dll', 'd3d12.dll', 'd3d10_1.dll', 'd3d10.dll', 'd3d10core.dll', 'd3d9.dll', 'd3d8.dll')
     foreach ($library in $priority) {
         if (-not $Libraries.Contains($library)) { continue }
@@ -277,7 +341,7 @@ function Resolve-DirectXVersion {
             if ($rule.Libraries -contains $library) { return $rule.Version }
         }
     }
-    if ($Libraries.Contains('dxgi.dll')) { return 'D3D11' }
+    if ($AllowDxgi -and $Libraries.Contains('dxgi.dll')) { return 'D3D11' }
     return $null
 }
 
@@ -329,7 +393,283 @@ function Find-RenderingCandidates {
         }
     }
 
+    $dllExtra = 0
+    $dllPattern = '(render|gfx|graphic|video|engine|display|core|game)'
+    foreach ($file in @(Get-ChildItem -LiteralPath $folder -Filter '*.dll' -File -ErrorAction SilentlyContinue)) {
+        if ($dllExtra -ge 4) { break }
+        if ($file.Name -match '^(d3d|dxgi|dxvk|vulkan|opengl|xinput|steam)') { continue }
+        if ($file.Name -notmatch $dllPattern) { continue }
+        if ($seen.Add($file.FullName)) {
+            [void]$results.Add($file.FullName)
+            $dllExtra++
+        }
+    }
+
     return $results.ToArray()
+}
+
+function New-LibrarySet {
+    return , (New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::OrdinalIgnoreCase))
+}
+
+function Get-ApiSignatureMap {
+    return @{
+        'D3D12CreateDevice'   = 'd3d12.dll'
+        'D3D11CreateDevice'   = 'd3d11.dll'
+        'D3D10CreateDevice1'  = 'd3d10_1.dll'
+        'D3D10CreateDevice'   = 'd3d10.dll'
+        'Direct3DCreate9'     = 'd3d9.dll'
+        'Direct3DCreate8'     = 'd3d8.dll'
+        'CreateDXGIFactory'   = 'dxgi.dll'
+    }
+}
+
+function Get-WeakSignatureMap {
+    return @{
+        'd3dx11_' = 'd3d11.dll'
+        'd3dx10_' = 'd3d10.dll'
+        'd3dx9_'  = 'd3d9.dll'
+    }
+}
+
+function Get-PeImportedLibraries {
+    param([string]$Path)
+    $found = New-LibrarySet
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    }
+    catch { return , $found }
+    try {
+        if ($stream.Length -lt 64) { return , $found }
+        $reader = New-Object System.IO.BinaryReader($stream)
+        $seek = { param([long]$Offset) [void]$stream.Seek($Offset, [System.IO.SeekOrigin]::Begin) }
+
+        if ($reader.ReadUInt16() -ne 0x5A4D) { return , $found }
+        & $seek 0x3C
+        $peOffset = [long]$reader.ReadInt32()
+        if ($peOffset -lt 0 -or ($peOffset + 120) -gt $stream.Length) { return , $found }
+        & $seek $peOffset
+        if ($reader.ReadUInt32() -ne 0x00004550) { return , $found }
+
+        & $seek ($peOffset + 6)
+        $sectionCount = [int]$reader.ReadUInt16()
+        & $seek ($peOffset + 20)
+        $optionalSize = [long]$reader.ReadUInt16()
+        $optionalOffset = $peOffset + 24
+        & $seek $optionalOffset
+        $magic = $reader.ReadUInt16()
+        if ($magic -eq 0x10B) {
+            & $seek ($optionalOffset + 28)
+            $imageBase = [long]$reader.ReadUInt32()
+            $directoryOffset = $optionalOffset + 96
+        }
+        elseif ($magic -eq 0x20B) {
+            & $seek ($optionalOffset + 24)
+            $imageBase = [long]$reader.ReadUInt64()
+            $directoryOffset = $optionalOffset + 112
+        }
+        else { return , $found }
+
+        & $seek ($directoryOffset - 4)
+        $directoryCount = [int]$reader.ReadUInt32()
+
+        $sections = New-Object System.Collections.ArrayList
+        $sectionTable = $optionalOffset + $optionalSize
+        for ($index = 0; $index -lt [Math]::Min($sectionCount, 96); $index++) {
+            & $seek ($sectionTable + (40 * $index) + 8)
+            $virtualSize = [long]$reader.ReadUInt32()
+            $virtualAddress = [long]$reader.ReadUInt32()
+            $rawSize = [long]$reader.ReadUInt32()
+            $rawPointer = [long]$reader.ReadUInt32()
+            [void]$sections.Add(@($virtualAddress, ([Math]::Max($virtualSize, $rawSize)), $rawPointer))
+        }
+
+        $toOffset = {
+            param([long]$Rva)
+            foreach ($section in $sections) {
+                if ($Rva -ge $section[0] -and $Rva -lt ($section[0] + $section[1])) { return ($Rva - $section[0] + $section[2]) }
+            }
+            if ($Rva -gt 0 -and $Rva -lt 0x1000) { return $Rva }
+            return -1
+        }
+
+        $readName = {
+            param([long]$Offset)
+            if ($Offset -lt 0 -or $Offset -ge $stream.Length) { return $null }
+            & $seek $Offset
+            $bytes = New-Object System.Collections.Generic.List[byte]
+            while ($bytes.Count -lt 260) {
+                $value = $stream.ReadByte()
+                if ($value -le 0) { break }
+                [void]$bytes.Add([byte]$value)
+            }
+            if ($bytes.Count -eq 0) { return $null }
+            return [System.Text.Encoding]::ASCII.GetString($bytes.ToArray())
+        }
+
+        if ($directoryCount -gt 1) {
+            & $seek ($directoryOffset + 8)
+            $importRva = [long]$reader.ReadUInt32()
+            $importOffset = if ($importRva -gt 0) { & $toOffset $importRva } else { -1 }
+            if ($importOffset -ge 0) {
+                for ($index = 0; $index -lt 512; $index++) {
+                    $entryOffset = $importOffset + (20 * $index)
+                    if (($entryOffset + 20) -gt $stream.Length) { break }
+                    & $seek ($entryOffset + 12)
+                    $nameRva = [long]$reader.ReadUInt32()
+                    if ($nameRva -eq 0) { break }
+                    $name = & $readName (& $toOffset $nameRva)
+                    if ($name) { [void]$found.Add($name) }
+                }
+            }
+        }
+
+        if ($directoryCount -gt 13) {
+            & $seek ($directoryOffset + 104)
+            $delayRva = [long]$reader.ReadUInt32()
+            $delayOffset = if ($delayRva -gt 0) { & $toOffset $delayRva } else { -1 }
+            if ($delayOffset -ge 0) {
+                for ($index = 0; $index -lt 512; $index++) {
+                    $entryOffset = $delayOffset + (32 * $index)
+                    if (($entryOffset + 32) -gt $stream.Length) { break }
+                    & $seek $entryOffset
+                    $attributes = [long]$reader.ReadUInt32()
+                    $nameRva = [long]$reader.ReadUInt32()
+                    if ($nameRva -eq 0) { break }
+                    if (($attributes -band 1) -eq 0) { $nameRva = $nameRva - $imageBase }
+                    $name = & $readName (& $toOffset $nameRva)
+                    if ($name) { [void]$found.Add($name) }
+                }
+            }
+        }
+    }
+    catch { $null = $null }
+    finally { $stream.Dispose() }
+    return , $found
+}
+
+function Read-SharedText {
+    param([string]$Path)
+    try {
+        $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+        try {
+            $reader = New-Object System.IO.StreamReader($stream, [System.Text.Encoding]::UTF8, $true)
+            return $reader.ReadToEnd()
+        }
+        finally { $stream.Dispose() }
+    }
+    catch { return $null }
+}
+
+function Resolve-BinaryApi {
+    param($Evidence, $Rules, $DllNames, $StrongMap, [bool]$AllowDxgi)
+    $directX = Resolve-DirectXVersion -Libraries $Evidence.Imports -Rules $Rules -AllowDxgi $AllowDxgi
+    if ($directX) { return [pscustomobject]@{ DirectX = $directX; Kind = 'pe_imports' } }
+
+    $names = New-LibrarySet
+    foreach ($name in $DllNames) {
+        if ($Evidence.Strings.Contains($name)) { [void]$names.Add($name) }
+    }
+    $directX = Resolve-DirectXVersion -Libraries $names -Rules $Rules -AllowDxgi $AllowDxgi
+    if ($directX) { return [pscustomobject]@{ DirectX = $directX; Kind = 'string_scan' } }
+
+    $signatures = New-LibrarySet
+    foreach ($key in $StrongMap.Keys) {
+        if ($Evidence.Strings.Contains($key)) { [void]$signatures.Add($StrongMap[$key]) }
+    }
+    $directX = Resolve-DirectXVersion -Libraries $signatures -Rules $Rules -AllowDxgi $AllowDxgi
+    if ($directX) { return [pscustomobject]@{ DirectX = $directX; Kind = 'api_signatures' } }
+    return $null
+}
+
+function Get-FileHintVersion {
+    param([string]$Folder)
+    $hints = @(
+        @('SharpDX.Direct3D12.dll', 'D3D12'), @('Vortice.Direct3D12.dll', 'D3D12'), @('Silk.NET.Direct3D12.dll', 'D3D12'),
+        @('SharpDX.Direct3D11.dll', 'D3D11'), @('Vortice.Direct3D11.dll', 'D3D11'), @('Silk.NET.Direct3D11.dll', 'D3D11'),
+        @('SharpDX.Direct3D10.dll', 'D3D10'),
+        @('SharpDX.Direct3D9.dll', 'D3D9'), @('Vortice.Direct3D9.dll', 'D3D9'), @('Silk.NET.Direct3D9.dll', 'D3D9'),
+        @('Microsoft.Xna.Framework.Graphics.dll', 'D3D9'),
+        @('d3d11.dll', 'D3D11'), @('d3d10core.dll', 'D3D10'), @('d3d9.dll', 'D3D9'), @('d3d8.dll', 'D3D8'),
+        @('d3dx11_*.dll', 'D3D11'), @('d3dx10_*.dll', 'D3D10'), @('d3dx9_*.dll', 'D3D9')
+    )
+    foreach ($hint in $hints) {
+        $files = @(Get-ChildItem -LiteralPath $Folder -Filter $hint[0] -File -ErrorAction SilentlyContinue)
+        if ($files.Count -gt 0) { return $hint[1] }
+    }
+    return $null
+}
+
+function Get-UnityLogVersion {
+    param([string]$ExePath)
+    $folder = Split-Path -Parent $ExePath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExePath)
+    $dataFolder = Join-Path $folder ($baseName + '_Data')
+    if (-not (Test-Path -LiteralPath $dataFolder -PathType Container)) { return $null }
+    $infoPath = Join-Path $dataFolder 'app.info'
+    if (-not (Test-Path -LiteralPath $infoPath -PathType Leaf)) { return $null }
+    $lines = @((Read-SharedText -Path $infoPath) -split "\r?\n" | Where-Object { $_.Trim() })
+    if ($lines.Count -lt 2) { return $null }
+    $localLow = Join-Path ([System.Environment]::GetFolderPath('UserProfile')) 'AppData\LocalLow'
+    $logFolder = Join-Path (Join-Path $localLow $lines[0].Trim()) $lines[1].Trim()
+    foreach ($logName in @('Player.log', 'Player-prev.log')) {
+        $logPath = Join-Path $logFolder $logName
+        if (-not (Test-Path -LiteralPath $logPath -PathType Leaf)) { continue }
+        $text = Read-SharedText -Path $logPath
+        if (-not $text) { continue }
+        $match = [regex]::Match($text, 'Direct3D\s+(\d+)\.(\d+)')
+        if (-not $match.Success) { continue }
+        switch ($match.Groups[1].Value) {
+            '12' { return 'D3D12' }
+            '11' { return 'D3D11' }
+            '10' { if ($match.Groups[2].Value -eq '1') { return 'D3D10.1' } else { return 'D3D10' } }
+            '9' { return 'D3D9' }
+        }
+    }
+    return $null
+}
+
+function Get-UnrealConfigVersion {
+    param([string]$ExePath)
+    $folder = Split-Path -Parent $ExePath
+    $baseName = [System.IO.Path]::GetFileNameWithoutExtension($ExePath)
+    $gameName = $null
+    if ($baseName -match '^(.+?)-Win(64|32)-Shipping$') { $gameName = $Matches[1] }
+    $relative = @('Config\DefaultEngine.ini', 'Saved\Config\WindowsNoEditor\Engine.ini', 'Saved\Config\Windows\Engine.ini', 'Saved\Config\WindowsNoEditor\GameUserSettings.ini')
+    $roots = New-Object System.Collections.ArrayList
+    $current = $folder
+    for ($level = 0; $level -lt 5 -and $current; $level++) {
+        [void]$roots.Add($current)
+        if ($gameName) { [void]$roots.Add((Join-Path $current $gameName)) }
+        $current = Split-Path -Parent $current
+    }
+    if ($gameName -and $env:LOCALAPPDATA) { [void]$roots.Add((Join-Path $env:LOCALAPPDATA $gameName)) }
+    foreach ($root in $roots) {
+        foreach ($item in $relative) {
+            $path = Join-Path $root $item
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { continue }
+            $text = Read-SharedText -Path $path
+            if (-not $text) { continue }
+            $match = [regex]::Match($text, '(?im)^\s*DefaultGraphicsRHI\s*=\s*DefaultGraphicsRHI_DX(11|12)\b')
+            if ($match.Success) { return ('D3D' + $match.Groups[1].Value) }
+        }
+    }
+    return $null
+}
+
+function Get-RunningProcessLibraries {
+    param([string]$ExePath)
+    $set = New-LibrarySet
+    $name = [WildcardPattern]::Escape([System.IO.Path]::GetFileNameWithoutExtension($ExePath))
+    foreach ($process in @(Get-Process -Name $name -ErrorAction SilentlyContinue)) {
+        try {
+            $processPath = $process.MainModule.FileName
+            if ([string]::Compare($processPath, $ExePath, $true) -ne 0) { continue }
+            foreach ($module in $process.Modules) { [void]$set.Add($module.ModuleName) }
+        }
+        catch { $null = $null }
+    }
+    return , $set
 }
 
 function Initialize-NativeMethods {
@@ -609,6 +949,7 @@ $script:MainWindowXaml = @'
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
           </Grid.RowDefinitions>
           <TextBlock x:Name="ArchLabel" Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Foreground="{StaticResource SubFgBrush}"/>
           <TextBox x:Name="ArchBox" Grid.Row="0" Grid.Column="1" Height="32" IsReadOnly="True"/>
@@ -616,6 +957,8 @@ $script:MainWindowXaml = @'
           <TextBox x:Name="DxBox" Grid.Row="1" Grid.Column="1" Margin="0,8,0,0" Height="32" IsReadOnly="True"/>
           <TextBlock x:Name="DllLabel" Grid.Row="2" Grid.Column="0" Margin="0,8,0,0" VerticalAlignment="Center" Foreground="{StaticResource SubFgBrush}"/>
           <TextBox x:Name="DllBox" Grid.Row="2" Grid.Column="1" Margin="0,8,0,0" Height="32" IsReadOnly="True"/>
+          <TextBlock x:Name="MethodLabel" Grid.Row="3" Grid.Column="0" Margin="0,8,0,0" VerticalAlignment="Center" Foreground="{StaticResource SubFgBrush}"/>
+          <TextBox x:Name="MethodBox" Grid.Row="3" Grid.Column="1" Margin="0,8,0,0" Height="32" IsReadOnly="True"/>
         </Grid>
       </Border>
 
@@ -638,56 +981,148 @@ $script:ReleasesWork = {
     $ProgressPreference = 'SilentlyContinue'
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
     $headers = @{ 'User-Agent' = $UserAgent; 'Accept' = 'application/vnd.github+json' }
-    $response = Invoke-RestMethod -Uri $Url -Headers $headers -TimeoutSec 30
     $collected = New-Object System.Collections.ArrayList
-    foreach ($release in @($response)) {
-        if ($release.draft) { continue }
-        $assets = @($release.assets) | Where-Object { $_.name -like '*.tar.gz' }
-        $asset = $assets | Where-Object { $_.name -notlike 'dxvk-native*' } | Select-Object -First 1
-        if (-not $asset) { $asset = $assets | Select-Object -First 1 }
-        if (-not $asset) { continue }
-        $published = $release.published_at
-        if ($published -isnot [datetime]) {
-            $published = [datetime]::Parse([string]$published, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+    $apiFailure = $null
+    try {
+        $response = Invoke-RestMethod -Uri $Url -Headers $headers -TimeoutSec 30
+        foreach ($release in @($response)) {
+            if ($release.draft) { continue }
+            $assets = @($release.assets) | Where-Object { $_.name -like '*.tar.gz' }
+            $asset = $assets | Where-Object { $_.name -notlike 'dxvk-native*' } | Select-Object -First 1
+            if (-not $asset) { $asset = $assets | Select-Object -First 1 }
+            if (-not $asset) { continue }
+            $published = $release.published_at
+            if ($published -isnot [datetime]) {
+                $published = [datetime]::Parse([string]$published, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+            }
+            [void]$collected.Add([pscustomobject]@{
+                    Tag        = [string]$release.tag_name
+                    Published  = $published.ToLocalTime()
+                    Prerelease = [bool]$release.prerelease
+                    AssetName  = [string]$asset.name
+                    AssetUrl   = [string]$asset.browser_download_url
+                })
+            if ($collected.Count -ge $Limit) { break }
         }
-        [void]$collected.Add([pscustomobject]@{
-                Tag        = [string]$release.tag_name
-                Published  = $published.ToLocalTime()
-                Prerelease = [bool]$release.prerelease
-                AssetName  = [string]$asset.name
-                AssetUrl   = [string]$asset.browser_download_url
-            })
-        if ($collected.Count -ge $Limit) { break }
     }
-    if ($collected.Count -eq 0) { throw 'No DXVK releases with a .tar.gz asset were found.' }
+    catch { $apiFailure = $_.Exception.Message }
+
+    if ($collected.Count -eq 0) {
+        try {
+            $feed = Invoke-WebRequest -Uri 'https://github.com/doitsujin/dxvk/releases.atom' -Headers @{ 'User-Agent' = $UserAgent } -UseBasicParsing -TimeoutSec 30
+            $xml = [xml]$feed.Content
+            foreach ($entry in @($xml.feed.entry)) {
+                $tag = ([string]$entry.link.href).Split('/')[-1]
+                if (-not $tag) { continue }
+                $assetName = 'dxvk-' + $tag.TrimStart('v') + '.tar.gz'
+                $published = [datetime]::Parse([string]$entry.updated, [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::RoundtripKind)
+                [void]$collected.Add([pscustomobject]@{
+                        Tag        = $tag
+                        Published  = $published.ToLocalTime()
+                        Prerelease = $false
+                        AssetName  = $assetName
+                        AssetUrl   = ('https://github.com/doitsujin/dxvk/releases/download/' + $tag + '/' + $assetName)
+                    })
+                if ($collected.Count -ge $Limit) { break }
+            }
+        }
+        catch { if (-not $apiFailure) { $apiFailure = $_.Exception.Message } }
+    }
+
+    if ($collected.Count -eq 0) {
+        if ($apiFailure) { throw $apiFailure }
+        throw 'No DXVK releases with a .tar.gz asset were found.'
+    }
     $collected.ToArray()
 }
 
 $script:AnalysisWork = {
     param($ExePath, $Rules)
     $ErrorActionPreference = 'Stop'
-    $names = @($Rules | ForEach-Object { $_.Libraries })
-    $architecture = Get-ExecutableArchitecture -Path $ExePath
-    $directX = $null
-    if ($architecture) {
-        $libraries = Find-ImportedLibraries -Path $ExePath -Names $names
-        $directX = Resolve-DirectXVersion -Libraries $libraries -Rules $Rules
+    $dllNames = @($Rules | ForEach-Object { $_.Libraries })
+    $strongMap = Get-ApiSignatureMap
+    $weakMap = Get-WeakSignatureMap
+    $allNames = @($dllNames) + @($strongMap.Keys) + @($weakMap.Keys)
+    $cache = @{}
+
+    $getEvidence = {
+        param($Path)
+        if (-not $cache.ContainsKey($Path)) {
+            $imports = Get-PeImportedLibraries -Path $Path
+            $strings = Find-ImportedLibraries -Path $Path -Names $allNames
+            $cache[$Path] = [pscustomobject]@{ Imports = $imports; Strings = $strings }
+        }
+        return $cache[$Path]
     }
-    if (-not $directX) {
-        $candidates = Find-RenderingCandidates -ExePath $ExePath
+
+    $architecture = Get-ExecutableArchitecture -Path $ExePath
+    $candidates = @(Find-RenderingCandidates -ExePath $ExePath)
+    if (-not $architecture) {
         foreach ($candidate in $candidates) {
             $candidateArch = Get-ExecutableArchitecture -Path $candidate
-            if (-not $candidateArch) { continue }
-            $candidateLibraries = Find-ImportedLibraries -Path $candidate -Names $names
-            $candidateDirectX = Resolve-DirectXVersion -Libraries $candidateLibraries -Rules $Rules
-            if ($candidateDirectX) {
-                $directX = $candidateDirectX
-                if (-not $architecture) { $architecture = $candidateArch }
-                break
-            }
+            if ($candidateArch) { $architecture = $candidateArch; break }
         }
     }
-    [pscustomobject]@{ Architecture = $architecture; DirectX = $directX }
+
+    $targets = New-Object System.Collections.ArrayList
+    if (Get-ExecutableArchitecture -Path $ExePath) { [void]$targets.Add([pscustomobject]@{ Path = $ExePath; Primary = $true }) }
+    foreach ($candidate in $candidates) {
+        if (Get-ExecutableArchitecture -Path $candidate) { [void]$targets.Add([pscustomobject]@{ Path = $candidate; Primary = $false }) }
+    }
+
+    $runPass = {
+        param([bool]$AllowDxgi)
+        foreach ($target in $targets) {
+            $evidence = & $getEvidence $target.Path
+            $hit = Resolve-BinaryApi -Evidence $evidence -Rules $Rules -DllNames $dllNames -StrongMap $strongMap -AllowDxgi $AllowDxgi
+            if ($hit) {
+                $method = 'method_related_binaries'
+                if ($target.Primary) { $method = 'method_' + $hit.Kind }
+                return [pscustomobject]@{ DirectX = $hit.DirectX; Method = $method }
+            }
+        }
+        return $null
+    }
+
+    $directX = $null
+    $method = $null
+    $result = & $runPass $false
+    if ($result) { $directX = $result.DirectX; $method = $result.Method }
+
+    if (-not $directX) {
+        $version = Get-FileHintVersion -Folder (Split-Path -Parent $ExePath)
+        if ($version) { $directX = $version; $method = 'method_file_hints' }
+    }
+    if (-not $directX) {
+        $version = Get-UnityLogVersion -ExePath $ExePath
+        if ($version) { $directX = $version; $method = 'method_unity_log' }
+    }
+    if (-not $directX) {
+        $version = Get-UnrealConfigVersion -ExePath $ExePath
+        if ($version) { $directX = $version; $method = 'method_engine_config' }
+    }
+    if (-not $directX) {
+        foreach ($target in $targets) {
+            $evidence = & $getEvidence $target.Path
+            $weak = New-LibrarySet
+            foreach ($key in $weakMap.Keys) {
+                if ($evidence.Strings.Contains($key)) { [void]$weak.Add($weakMap[$key]) }
+            }
+            $version = Resolve-DirectXVersion -Libraries $weak -Rules $Rules -AllowDxgi $false
+            if ($version) { $directX = $version; $method = 'method_weak_signatures'; break }
+        }
+    }
+    if (-not $directX) {
+        $result = & $runPass $true
+        if ($result) { $directX = $result.DirectX; $method = $result.Method }
+    }
+    if (-not $directX) {
+        $running = Get-RunningProcessLibraries -ExePath $ExePath
+        $version = Resolve-DirectXVersion -Libraries $running -Rules $Rules -AllowDxgi $true
+        if ($version) { $directX = $version; $method = 'method_running_process' }
+    }
+
+    [pscustomobject]@{ Architecture = $architecture; DirectX = $directX; Method = $method }
 }
 
 $script:DownloadWork = {
@@ -865,6 +1300,7 @@ function Update-AnalysisDisplay {
     $script:Ui.ArchBox.Text = $archText
     $script:Ui.DxBox.Text = if ($state.DirectX) { [string]$state.DirectX } else { Get-Text 'dx_unknown' }
     $script:Ui.DllBox.Text = if (@($state.Dlls).Count -gt 0) { (@($state.Dlls) -join ', ') } else { '-' }
+    $script:Ui.MethodBox.Text = if ($state.Method) { Get-Text ([string]$state.Method) } else { '-' }
 }
 
 function Update-ReleaseList {
@@ -900,6 +1336,7 @@ function Set-UiLanguage {
     $ui.ArchLabel.Text = Get-Text 'label_arch'
     $ui.DxLabel.Text = Get-Text 'label_dx_version'
     $ui.DllLabel.Text = Get-Text 'label_dlls_to_install'
+    $ui.MethodLabel.Text = Get-Text 'label_detection_method'
     $ui.InstallButton.Content = Get-Text 'button_install'
     Update-ReleaseList
     Update-AnalysisDisplay
@@ -911,6 +1348,7 @@ function Reset-Analysis {
     $script:State.ExePath = ''
     $script:State.Arch = $null
     $script:State.DirectX = $null
+    $script:State.Method = $null
     $script:State.Dlls = @()
     Update-AnalysisDisplay
     Update-InstallButtonState
@@ -944,7 +1382,7 @@ function Start-ExecutableAnalysis {
     $script:State.PendingExePath = $Path
     Set-Busy $true
     Set-StatusKey 'status_analyzing'
-    Invoke-Async -Work $script:AnalysisWork -Functions @('Get-ExecutableArchitecture', 'Find-ImportedLibraries', 'Resolve-DirectXVersion', 'Find-RenderingCandidates') -Arguments @($Path, $script:DirectXRules) -OnComplete {
+    Invoke-Async -Work $script:AnalysisWork -Functions @('Get-ExecutableArchitecture', 'Find-ImportedLibraries', 'Resolve-DirectXVersion', 'Find-RenderingCandidates', 'New-LibrarySet', 'Get-ApiSignatureMap', 'Get-WeakSignatureMap', 'Get-PeImportedLibraries', 'Read-SharedText', 'Resolve-BinaryApi', 'Get-FileHintVersion', 'Get-UnityLogVersion', 'Get-UnrealConfigVersion', 'Get-RunningProcessLibraries') -Arguments @($Path, $script:DirectXRules) -OnComplete {
         param($output, $failure)
         Set-Busy $false
         if ($failure) {
@@ -963,6 +1401,7 @@ function Start-ExecutableAnalysis {
         $script:State.ExePath = $script:State.PendingExePath
         $script:State.Arch = [string]$result.Architecture
         $script:State.DirectX = $result.DirectX
+        $script:State.Method = $result.Method
         $script:State.Dlls = if ($result.DirectX) { @($script:DllMap[[string]$result.DirectX]) } else { @() }
         Update-AnalysisDisplay
         Update-InstallButtonState
@@ -1138,6 +1577,7 @@ try {
         PendingRelease  = $null
         Arch            = $null
         DirectX         = $null
+        Method          = $null
         Dlls            = @()
         Busy            = $false
         Started         = $false
@@ -1160,7 +1600,7 @@ try {
     $controlNames = @(
         'TitleText', 'SubtitleText', 'LanguageCombo', 'VersionLabel', 'VersionCombo', 'RefreshButton',
         'ExeLabel', 'ExePathBox', 'BrowseButton', 'AnalysisPanel', 'ArchLabel', 'ArchBox', 'DxLabel', 'DxBox',
-        'DllLabel', 'DllBox', 'ProgressIndicator', 'StatusText', 'InstallButton', 'FooterText'
+        'DllLabel', 'DllBox', 'MethodLabel', 'MethodBox', 'ProgressIndicator', 'StatusText', 'InstallButton', 'FooterText'
     )
     foreach ($controlName in $controlNames) { $script:Ui[$controlName] = $script:Window.FindName($controlName) }
 

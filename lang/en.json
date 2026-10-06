@@ -7,6 +7,7 @@
   "label_arch": "Architecture",
   "label_dx_version": "Detected DirectX",
   "label_dlls_to_install": "DLLs to install",
+  "label_detection_method": "Detected via",
   "label_downloads_path": "Files saved to",
   "button_browse": "Browse...",
   "button_refresh": "Refresh",
@@ -50,5 +51,14 @@
   "arch_32": "32-bit (x86)",
   "arch_64": "64-bit (x64)",
   "arch_unknown": "Unknown",
-  "dx_unknown": "Not detected"
+  "dx_unknown": "Not detected",
+  "method_pe_imports": "Executable import table",
+  "method_string_scan": "Library name scan",
+  "method_api_signatures": "API function signatures",
+  "method_related_binaries": "Related game binaries",
+  "method_file_hints": "Game folder files",
+  "method_unity_log": "Unity player log",
+  "method_engine_config": "Unreal Engine config",
+  "method_weak_signatures": "Legacy D3DX references",
+  "method_running_process": "Running game process"
 }

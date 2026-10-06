@@ -13,10 +13,10 @@
 Open **PowerShell** and paste:
 
 ```powershell
-irm https://raw.githubusercontent.com/Khotyz/AutoDXVK/main/AutoDXVK.ps1 | iex
+irm https://raw.githubusercontent.com/Khotyz/AutoDXVK/refs/heads/main/AutoDXVK.ps1 | iex
 ```
 
-This downloads the latest version and the language files to a temporary folder, requests administrator privileges through the standard UAC prompt, and starts the interface. Nothing is installed permanently and the temporary files are overwritten on the next run.
+This downloads the latest version and the language files to a temporary folder (with automatic fallback to mirror URLs, UTF-8 BOM cleanup and a syntax check before launching), requests administrator privileges through the standard UAC prompt, and starts the interface. Nothing is installed permanently and the temporary files are overwritten on the next run.
 
 ### Manual install
 
@@ -76,11 +76,18 @@ That is all. Restart the game and it will run through DXVK.
 
 ## 🔍 How the API detection works
 
-The app reads the names of imported libraries directly from the executable. When the selected file does not reveal the API, it inspects other binaries in the same folder and in adjacent directories, covering the common cases of modern engines:
+Detection runs through a chain of methods and stops at the first one that identifies the API. The method used is shown in the **Detected via** field of the interface.
 
-* **Unity games:** `UnityPlayer.dll` is inspected when the main executable is only a stub.
-* **Unreal Engine games:** executables ending in `-Win64-Shipping.exe`, `-Win32-Shipping.exe`, or `-Shipping.exe` are inspected.
-* **Launcher style distributions:** sibling `.exe` files and files inside `Binaries\Win64` or `Binaries\Win32` are inspected.
+1. **Executable import table:** the PE import and delay-import tables are parsed directly, which gives the exact list of linked libraries.
+2. **Library name scan:** the binary is scanned for DLL names in ASCII and UTF-16, which covers libraries loaded dynamically with `LoadLibrary`.
+3. **API function signatures:** the binary is scanned for entry points such as `D3D11CreateDevice`, `D3D12CreateDevice`, `D3D10CreateDevice1`, `Direct3DCreate9` and `Direct3DCreate8`.
+4. **Related game binaries:** when the selected file is only a launcher, steps 1 to 3 are repeated on `UnityPlayer.dll`, `*-Shipping.exe` files, sibling executables, `Binaries\Win64` and `Binaries\Win32` folders, and renderer or engine style DLLs in the game folder.
+5. **Game folder files:** managed wrappers such as `SharpDX.Direct3D11.dll`, `Vortice.*`, `Silk.NET.*` and XNA, existing `d3d*.dll` wrappers, and `d3dx9_*`, `d3dx10_*`, `d3dx11_*` runtime files.
+6. **Unity player log:** `Player.log` in `AppData\LocalLow` is read for the graphics device the game actually initialized.
+7. **Unreal Engine config:** `DefaultGraphicsRHI` is read from `DefaultEngine.ini` and related files.
+8. **Legacy D3DX references:** weak string hints such as `d3dx9_` found inside the binaries.
+9. **DXGI only:** if the only evidence is `dxgi.dll` or `CreateDXGIFactory`, D3D11 is assumed.
+10. **Running game process:** if the game is currently running, the modules loaded in the process are inspected. This is the last resort because overlays can load extra Direct3D libraries.
 
 When a game references multiple DirectX APIs, D3D11 takes precedence over D3D12. This matches the case of Unity and Unreal Engine titles, which often expose both APIs but render through D3D11 on most configurations.
 
@@ -145,13 +152,14 @@ The interface adapts to the version of Windows and to the current system theme:
 * **Direct3D 8:** `d3d8.dll` is only present in recent DXVK releases. On older versions, select a different release.
 * **Direct3D 10:** In DXVK 2.x, `d3d10.dll` and `d3d10_1.dll` do not exist, and `d3d10core.dll` depends on `d3d11.dll`. In this case the app also copies `d3d11.dll` from the package.
 * **Anti-cheat:** Games with anti-cheat may block or ban DLL modifications. Use at your own risk.
-* **GitHub rate limit:** The public API limits unauthenticated requests. If an error appears, wait a moment and use Refresh.
+* **GitHub rate limit:** The public API limits unauthenticated requests. When the API fails, the release list falls back to the repository's Atom feed automatically.
 * **Reverting changes:** To uninstall, restore the files from `DXVK_Backup` or delete the copied DLL files.
 
 ---
 
 ## 🔧 Troubleshooting
 
+* **The online command fails:** Make sure the repository is public and that `AutoDXVK.ps1` is saved as UTF-8 without BOM. A BOM breaks `irm | iex` in Windows PowerShell 5.1.
 * **The script does not start:** Open PowerShell and run `Get-ExecutionPolicy`. If it returns `Restricted`, use the one-line command in the How to Run section, which sets the policy only for the current process.
 * **Language files not found:** Make sure the `lang` folder sits next to `AutoDXVK.ps1` and contains `en.json`, `pt-br.json`, and `es.json`.
 * **The app cannot detect the DirectX version:** The executable may be packed or may belong to a launcher. Try selecting the real rendering executable inside the game folder, often under `Binaries\Win64` for Unreal Engine or next to `UnityPlayer.dll` for Unity.
