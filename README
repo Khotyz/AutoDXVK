@@ -1,89 +1,63 @@
 # Auto DXVK
 
-A graphical application (WPF) that automates the installation of [DXVK](https://github.com/doitsujin/dxvk) into Windows games. It downloads the selected release, detects the game architecture and DirectX version, and copies the appropriate DLL files to the game folder.
+A graphical installer that puts [DXVK](https://github.com/doitsujin/dxvk) into your Windows games with a few clicks. Pick a version, choose the game executable, and the app detects the architecture and DirectX version automatically, then copies the correct DLL files into the game folder.
 
 Repository: https://github.com/Khotyz/AutoDXVK
 
-## Requirements
+## Why use it
 
-- Windows 10 (1809 through 22H2) or Windows 11 (all versions)
-- Windows PowerShell 5.1 (included in the operating system). PowerShell 7 is not required.
-- .NET Framework 4.7.2 or later (already included in the versions above)
-- `tar.exe` from Windows (available since Windows 10 1803)
-- Internet access for querying the GitHub API and downloading DXVK
-- A GPU and driver with Vulkan support
+- No manual extraction, no hunting for the right DLL files.
+- Detects whether the game is 32 bit or 64 bit.
+- Detects the DirectX version the game actually uses, including Unity and Unreal Engine titles whose main `.exe` is only a launcher.
+- Keeps a backup of any DLL it replaces, so reverting is a single step.
+- Interface available in English, Portuguese (Brazil), and Spanish.
 
-## Structure
+## Quick start
 
-    AutoDXVK/
-    ├── AutoDXVK.ps1
-    ├── lang/
-    │   ├── en.json
-    │   ├── pt-br.json
-    │   └── es.json
-    └── README.md
+### Option 1: Run it online, no download required
 
-The `lang` folder must reside next to `AutoDXVK.ps1`.
+Open any PowerShell window and paste the following line. It downloads the script and the language files to a temporary folder and starts the application.
 
-## Saving AutoDXVK.ps1 with the correct encoding
+```powershell
+$b='https://raw.githubusercontent.com/Khotyz/AutoDXVK/main';$d=Join-Path $env:TEMP 'AutoDXVK';New-Item -ItemType Directory -Path (Join-Path $d 'lang') -Force|Out-Null;Invoke-WebRequest "$b/AutoDXVK.ps1" -OutFile (Join-Path $d 'AutoDXVK.ps1');'en','pt-br','es'|%{Invoke-WebRequest "$b/lang/$_.json" -OutFile (Join-Path $d "lang\$_.json")};powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $d 'AutoDXVK.ps1')
+```
 
-The script uses only ASCII characters, but saving it as UTF-8 with BOM prevents any reading issues in Windows 10 consoles with legacy code pages.
+The files are stored under `%TEMP%\AutoDXVK` and overwritten on each run.
 
-1. Open `AutoDXVK.ps1` in Notepad, VS Code, or Notepad++.
-2. Notepad: File > Save As > Encoding: UTF-8 with BOM.
-3. VS Code: click `UTF-8` in the status bar, then Save with encoding, then UTF-8 with BOM.
-4. Notepad++: Encoding menu, then UTF-8-BOM.
+### Option 2: Clone the repository
 
-The language `.json` files must remain in UTF-8 (with or without BOM), as they contain accented characters.
+```powershell
+git clone https://github.com/Khotyz/AutoDXVK
+cd AutoDXVK
+powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\AutoDXVK.ps1
+```
 
-## Running from a local copy
+If the files came from a download, unblock them first:
 
-Open PowerShell in the project folder and execute:
+```powershell
+Get-ChildItem -Recurse | Unblock-File
+```
 
-    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-    .\AutoDXVK.ps1
+Games installed in protected folders such as `C:\Program Files` require PowerShell to be started as administrator.
 
-If the files were obtained from a download, unblock them beforehand:
+## How to use
 
-    Get-ChildItem -Recurse | Unblock-File
+1. Select the DXVK version. The list shows the five most recent releases from GitHub. The Refresh button reloads the list.
+2. Click Browse and select the game executable. The app shows the architecture, the detected DirectX version, and the DLL files that will be installed.
+3. Click Install DXVK. The app downloads the package, extracts it, backs up any existing DLL, and copies the new files into the game folder.
 
-It is also possible to start the script without changing the current session policy:
+That is all. Restart the game and it will run through DXVK.
 
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File .\AutoDXVK.ps1
+## What the app does under the hood
 
-Games installed in protected folders, such as `C:\Program Files`, require PowerShell to be started as administrator.
-
-## Running online without downloading manually
-
-The command below downloads the script and the language files to a temporary folder and starts the application. Paste the entire line into any PowerShell window:
-
-    $b='https://raw.githubusercontent.com/Khotyz/AutoDXVK/main';$d=Join-Path $env:TEMP 'AutoDXVK';New-Item -ItemType Directory -Path (Join-Path $d 'lang') -Force|Out-Null;Invoke-WebRequest "$b/AutoDXVK.ps1" -OutFile (Join-Path $d 'AutoDXVK.ps1');'en','pt-br','es'|%{Invoke-WebRequest "$b/lang/$_.json" -OutFile (Join-Path $d "lang\$_.json")};powershell.exe -NoProfile -ExecutionPolicy Bypass -STA -File (Join-Path $d 'AutoDXVK.ps1')
-
-The files are stored under `%TEMP%\AutoDXVK`. Each execution overwrites the previous copy. The `lang` folder is placed alongside the script, so no manual setup is required.
-
-## Packaging with PS2EXE
-
-    Install-Module ps2exe -Scope CurrentUser
-    Invoke-PS2EXE .\AutoDXVK.ps1 .\AutoDXVK.exe -noConsole -STA
-
-Keep the `lang` folder next to the `.exe`.
-
-## Usage
-
-1. Select the DXVK version. The list contains the five most recent releases from GitHub. The Refresh button reloads the list.
-2. Click Browse and select the game `.exe`. The application displays the architecture, the detected DirectX version, and the DLL files that will be installed.
-3. Click Install DXVK.
-
-## What the script does
-
-- Downloads the `.tar.gz` to `Downloads\Auto DXVK\` and extracts it into the same folder. The folder is not removed after installation.
-- If DLL files already exist in the game folder, it asks for confirmation before overwriting and saves the originals in `DXVK_Backup`. An existing backup is never overwritten.
+- Downloads the selected `.tar.gz` into `Downloads\Auto DXVK\` and extracts it there. The folder is kept after installation so you can inspect or reuse the files.
+- If DLL files already exist in the game folder, asks for confirmation before overwriting and saves the originals under `DXVK_Backup`. An existing backup is never overwritten.
 - Creates an empty `dxvk.conf` in the game folder if one does not already exist.
-- Displays a toast notification at the end, with `MessageBox` as a fallback.
+- Shows a Windows toast notification when the installation completes, with a standard dialog as a fallback.
 
-## DLL files per API
+## Supported DirectX versions
 
-| Detected API | Copied DLL files |
+| Detected API | DLL files copied |
 | --- | --- |
 | D3D8 | d3d8.dll |
 | D3D9 | d3d9.dll |
@@ -91,38 +65,87 @@ Keep the `lang` folder next to the `.exe`.
 | D3D11 | d3d11.dll, dxgi.dll |
 | D3D12 | d3d12.dll, dxgi.dll |
 
-Only the DLL files that exist in the downloaded package are copied.
+Only the DLL files that exist in the downloaded package are copied. See the limitations below for details on D3D12.
 
-## API detection
+## How the API detection works
 
-The script inspects the selected executable and, when the result is inconclusive, additional binaries located in the same folder or in adjacent directories. The following scenarios are covered:
+The app reads the names of imported libraries directly from the executable. When the selected file does not reveal the API, it inspects other binaries in the same folder and in adjacent directories, covering the common cases of modern engines:
 
-- Launchers whose executable is a small stub. The script inspects sibling `.exe` files and files inside `Binaries\Win64` or `Binaries\Win32`.
-- Unity games. `UnityPlayer.dll` is inspected when the main `.exe` does not reveal the API.
-- Unreal Engine games. Executables whose names end in `-Win64-Shipping.exe`, `-Win32-Shipping.exe`, or `-Shipping.exe` are inspected.
+- Unity games: `UnityPlayer.dll` is inspected when the main executable is only a stub.
+- Unreal Engine games: executables ending in `-Win64-Shipping.exe`, `-Win32-Shipping.exe`, or `-Shipping.exe` are inspected.
+- Launcher style distributions: sibling `.exe` files and files inside `Binaries\Win64` or `Binaries\Win32` are inspected.
 
-When multiple DirectX APIs are present, D3D11 takes precedence over D3D12. This matches the case of Unity and Unreal Engine games, which often expose both APIs but render through D3D11 on most configurations.
+When a game references multiple DirectX APIs, D3D11 takes precedence over D3D12. This matches the case of Unity and Unreal Engine titles, which often expose both APIs but render through D3D11 on most configurations.
 
-## Appearance by Windows version
+## Requirements
 
-- Windows 11: Mica effect and rounded corners through DWM. On builds earlier than 22621 the script attempts the alternative Mica attribute.
-- Windows 10: solid light or dark background according to the system theme, without Mica.
+- Windows 10 (1809 through 22H2) or Windows 11 (all versions)
+- Windows PowerShell 5.1, included in the operating system. PowerShell 7 is not required.
+- .NET Framework 4.7.2 or later, already included in the versions above
+- `tar.exe` from Windows, available since Windows 10 1803
+- Internet access for querying the GitHub API and downloading DXVK
+- A GPU and driver with Vulkan support
+
+## Project structure
+
+```
+AutoDXVK/
+├── AutoDXVK.ps1
+├── lang/
+│   ├── en.json
+│   ├── pt-br.json
+│   └── es.json
+├── .gitignore
+└── README.md
+```
+
+The `lang` folder must reside next to `AutoDXVK.ps1`.
+
+## Packaging as a standalone executable
+
+If you prefer a single `.exe` with no PowerShell window, use PS2EXE:
+
+```powershell
+Install-Module ps2exe -Scope CurrentUser
+Invoke-PS2EXE .\AutoDXVK.ps1 .\AutoDXVK.exe -noConsole -STA
+```
+
+Keep the `lang` folder next to the generated `.exe`.
+
+## Appearance
+
+The interface adapts to the version of Windows and to the current system theme:
+
+- Windows 11: Mica backdrop and rounded corners through DWM. On builds earlier than 22621 the app attempts the alternative Mica attribute.
+- Windows 10: solid light or dark background matching the system theme, without Mica.
 - Accent color is read from the system, with a fallback to `#0078D4`.
 
 ## Known limitations
 
-- **Executables packaged or protected:** DirectX detection reads DLL names inside the file. Executables protected by packers, DRM, or dynamic loading may not reveal the API. In this case the application warns the user and does not allow installation.
-- **Text based detection:** the presence of `dxgi.dll` is treated as D3D11, and the highest precedence API wins. Games that reference multiple APIs may be classified differently from the one actually used at runtime.
-- **Direct3D 12:** DXVK does not implement D3D12. That is the role of vkd3d-proton. DXVK packages do not include `d3d12.dll`, so installation for D3D12 games is interrupted with an explanatory message.
-- **Direct3D 8:** `d3d8.dll` is only present in recent DXVK releases. On older versions, select a different release.
-- **Direct3D 10:** in DXVK 2.x, `d3d10.dll` and `d3d10_1.dll` do not exist, and `d3d10core.dll` depends on `d3d11.dll`. In this case the script also copies `d3d11.dll` from the package.
-- **Anti-cheat:** games with anti-cheat may block or ban DLL modifications. Use at your own risk.
-- **GitHub rate limit:** the public API limits unauthenticated requests. In case of an error, wait and use Refresh.
-- **Reverting changes:** to uninstall, restore the files from `DXVK_Backup` or delete the copied DLL files.
+- **Executables that are packed or protected.** DirectX detection reads DLL names inside the file. Executables protected by packers, DRM, or dynamic loading may not reveal the API. In that case the app warns you and does not allow installation.
+- **Text based detection.** Games that reference multiple APIs at once may be classified differently from the one actually used at runtime.
+- **Direct3D 12.** DXVK does not implement D3D12. That is the role of vkd3d-proton. DXVK packages do not include `d3d12.dll`, so installation for D3D12 games is interrupted with an explanatory message.
+- **Direct3D 8.** `d3d8.dll` is only present in recent DXVK releases. On older versions, select a different release.
+- **Direct3D 10.** In DXVK 2.x, `d3d10.dll` and `d3d10_1.dll` do not exist, and `d3d10core.dll` depends on `d3d11.dll`. In this case the app also copies `d3d11.dll` from the package.
+- **Anti-cheat.** Games with anti-cheat may block or ban DLL modifications. Use at your own risk.
+- **GitHub rate limit.** The public API limits unauthenticated requests. If an error appears, wait a moment and use Refresh.
+- **Reverting changes.** To uninstall, restore the files from `DXVK_Backup` or delete the copied DLL files.
 
-## Summary of recent changes
+## Troubleshooting
 
-- Added fallback inspection of rendering binaries when the selected executable does not reveal a DirectX API. This resolves the frequent case of Unity and Unreal Engine games whose main `.exe` is only a stub or a launcher.
-- DirectX resolution now applies a precedence order that favors D3D11 over D3D12 when both APIs are present. This reflects the actual rendering path of most Unity and Unreal Engine titles.
-- Architecture and library detection now tolerate files that are locked by other processes and continue scanning the remaining candidates instead of aborting the analysis.
-- Installation now uses a lookup table for architecture folder names, aligning the structure with the rest of the configuration data in the script.
+**The script does not start.** Open PowerShell and run `Get-ExecutionPolicy`. If it returns `Restricted`, use the command line shown in the Quick start section, which sets the policy only for the current process.
+
+**Language files not found.** Make sure the `lang` folder sits next to `AutoDXVK.ps1` and contains `en.json`, `pt-br.json`, and `es.json`.
+
+**The app cannot detect the DirectX version.** The executable may be packed or may belong to a launcher. Try selecting the real rendering executable inside the game folder, often under `Binaries\Win64` for Unreal Engine or next to `UnityPlayer.dll` for Unity.
+
+**Copy fails with an access error.** The game is in a protected folder. Close the game and run PowerShell as administrator, then try again.
+
+## License
+
+Distributed under the MIT License. See the [DXVK](https://github.com/doitsujin/dxvk) project for its own license terms.
+
+## Credits
+
+- [DXVK](https://github.com/doitsujin/dxvk) by Philip Rebohle and contributors.
+- [vkd3d-proton](https://github.com/HansKristian-Work/vkd3d-proton), the recommended option for Direct3D 12 games.
